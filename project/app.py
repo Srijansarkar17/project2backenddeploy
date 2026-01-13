@@ -193,12 +193,14 @@ def upload_file():
 
         result_df.to_csv(output_path, index=False)
 
+        # ✅ FIXED: Match the frontend's expected structure
         return jsonify({
-            "success": True,
-            "message": "File processed successfully",
-            "total_records": len(result_df),
-            "columns": list(result_df.columns),
-            "preview": result_df.head(5).fillna("").to_dict("records"),
+            "stats": {
+                "total_records": len(result_df),
+                "filename": output_filename,
+                "columns": list(result_df.columns),
+                "preview": result_df.head(5).fillna("").to_dict("records")
+            },
             "download_url": f"/api/download/{output_filename}"
         })
 
