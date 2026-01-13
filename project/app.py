@@ -51,21 +51,16 @@ def safe_series(df, col, dtype="object"):
 # ======================
 def process_excel_file(xlsx_path):
     try:
-        # Read Excel
         df = pd.read_excel(xlsx_path)
-
-        # Remove fully blank rows
         df = df.dropna(how="all")
 
-        # 🔥 Normalize column names (handles \n, spaces, tabs)
+        # Normalize column names
         df.columns = (
-            df.columns
-            .astype(str)
+            df.columns.astype(str)
             .str.replace(r"\s+", " ", regex=True)
             .str.strip()
         )
 
-        # Columns to remove safely
         delete_column_names = [
             "Exch", "Book Type", "Settlement", "Transaction Date",
             "Order #", "Order Time", "Trade #", "Trade Time",
@@ -81,12 +76,12 @@ def process_excel_file(xlsx_path):
             errors="ignore"
         )
 
-        # Convert numeric columns if present
+        # Numeric conversion
         for col in ["Bought Quantity", "Sold Quantity", "Mkt. Value"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Remove SYS18 / SYS27 codes (do NOT delete quantities)
+        # SYS cleanup
         for side in ["Bought", "Sold"]:
             code_col = f"{side} Code"
             name_col = f"{side} Name"
@@ -96,44 +91,37 @@ def process_excel_file(xlsx_path):
                 if name_col in df.columns:
                     df.loc[mask, name_col] = None
 
-        # Ensure quantity columns exist
-        if "Bought Quantity" not in df.columns:
-            df["Bought Quantity"] = np.nan
-        if "Sold Quantity" not in df.columns:
-            df["Sold Quantity"] = np.nan
+        # Ensure required columns exist
+        for col in ["Bought Quantity", "Sold Quantity", "Scrip Name"]:
+            if col not in df.columns:
+                df[col] = np.nan
 
-        # Sold quantities must be negative
+        # Sold quantities negative
         df["Sold Quantity"] = df["Sold Quantity"].apply(
             lambda x: -abs(x) if pd.notnull(x) else x
         )
 
-        # Ensure Market Value exists
         if "Mkt. Value" not in df.columns:
             df["Mkt. Value"] = 0
 
-        # Market value sign follows sold quantity
         df["Mkt. Value"] = np.where(
             df["Sold Quantity"].notna(),
             -abs(df["Mkt. Value"]),
             df["Mkt. Value"]
         )
 
-        # ======================
-        # SAFE MERGE (NO NoneType)
-        # ======================
+        # Safe merge
         df["Final Code"] = safe_series(df, "Bought Code").combine_first(
             safe_series(df, "Sold Code")
         )
-
         df["Final Name"] = safe_series(df, "Bought Name").combine_first(
             safe_series(df, "Sold Name")
         )
-
         df["Final Quantity"] = safe_series(df, "Bought Quantity", "float").combine_first(
             safe_series(df, "Sold Quantity", "float")
         )
 
-        # Aggregate results
+        # ✅ SAFE GROUPBY (no KeyError possible)
         summary = (
             df.groupby(
                 ["Final Name", "Scrip Name", "Final Code"],
@@ -146,7 +134,6 @@ def process_excel_file(xlsx_path):
             .reset_index()
         )
 
-        # Rename output columns
         summary.columns = [
             "Bought Name",
             "Scrip Name",
@@ -155,7 +142,6 @@ def process_excel_file(xlsx_path):
             "Sum of Value"
         ]
 
-        # Filter large transactions
         summary = summary[
             (summary["Sum of Bought Quantity"].abs() >= 10_000) |
             (summary["Sum of Value"].abs() >= 1_000_000)
@@ -165,6 +151,7 @@ def process_excel_file(xlsx_path):
 
     except Exception as e:
         raise Exception(f"Error processing file: {str(e)}")
+
 
 
 # ======================
