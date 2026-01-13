@@ -9,7 +9,9 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-# CORS
+# ======================
+# CORS CONFIG
+# ======================
 CORS(
     app,
     origins=[
@@ -31,17 +33,27 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-# =========================
-# CORE PROCESSING FUNCTION
-# =========================
+# ======================
+# CORE PROCESSING LOGIC
+# ======================
 def process_excel_file(xlsx_path):
     try:
-        df = pd.read_excel(xlsx_path)
+        # Read Excel safely (handles blank rows at top)
+        df = pd.read_excel(xlsx_path, skip_blank_lines=True)
 
-        # Drop completely empty rows
+        # Drop fully empty rows
         df = df.dropna(how="all")
 
-        # Columns we never need
+        # 🔥 CRITICAL FIX: normalize column names
+        # Handles: "Sold\nQuantity", "Sold Quantity", extra spaces, tabs
+        df.columns = (
+            df.columns
+            .astype(str)
+            .str.replace(r"\s+", " ", regex=True)
+            .str.strip()
+        )
+
+        # Columns to remove (safe even if missing)
         delete_column_names = [
             "Exch", "Book Type", "Settlement", "Transaction Date",
             "Order #", "Order Time", "Trade #", "Trade Time",
@@ -57,12 +69,12 @@ def process_excel_file(xlsx_path):
             errors="ignore"
         )
 
-        # Convert numeric columns safely
+        # Ensure numeric conversion only if column exists
         for col in ["Bought Quantity", "Sold Quantity", "Mkt. Value"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Remove SYS18 / SYS27 codes (DO NOT destroy quantity/value)
+        # SYS18 / SYS27 cleanup (DO NOT touch quantities or values)
         for side in ["Bought", "Sold"]:
             code_col = f"{side} Code"
             name_col = f"{side} Name"
@@ -70,27 +82,37 @@ def process_excel_file(xlsx_path):
             if code_col in df.columns:
                 mask = df[code_col].isin(["SYS18", "SYS27"])
                 df.loc[mask, code_col] = None
-                df.loc[mask, name_col] = None
+                if name_col in df.columns:
+                    df.loc[mask, name_col] = None
 
-        # Sold quantity must always be negative
-        if "Sold Quantity" in df.columns:
-            df["Sold Quantity"] = df["Sold Quantity"].apply(
-                lambda x: -abs(x) if pd.notnull(x) else x
-            )
+        # Guarantee quantity columns exist
+        if "Bought Quantity" not in df.columns:
+            df["Bought Quantity"] = np.nan
+        if "Sold Quantity" not in df.columns:
+            df["Sold Quantity"] = np.nan
 
-        # Market value sign follows quantity sign
+        # Sold quantities must be negative
+        df["Sold Quantity"] = df["Sold Quantity"].apply(
+            lambda x: -abs(x) if pd.notnull(x) else x
+        )
+
+        # Ensure Market Value exists
+        if "Mkt. Value" not in df.columns:
+            df["Mkt. Value"] = 0
+
+        # Market value sign follows sold quantity
         df["Mkt. Value"] = np.where(
             df["Sold Quantity"].notna(),
             -abs(df["Mkt. Value"]),
             df["Mkt. Value"]
         )
 
-        # Merge bought & sold legs
-        df["Final Code"] = df["Bought Code"].fillna(df["Sold Code"])
-        df["Final Name"] = df["Bought Name"].fillna(df["Sold Name"])
-        df["Final Quantity"] = df["Bought Quantity"].fillna(df["Sold Quantity"])
+        # Merge bought & sold legs safely
+        df["Final Code"] = df.get("Bought Code").combine_first(df.get("Sold Code"))
+        df["Final Name"] = df.get("Bought Name").combine_first(df.get("Sold Name"))
+        df["Final Quantity"] = df["Bought Quantity"].combine_first(df["Sold Quantity"])
 
-        # Aggregate (CRITICAL FIX: dropna=False)
+        # Aggregate (IMPORTANT: dropna=False)
         summary = (
             df.groupby(
                 ["Final Name", "Scrip Name", "Final Code"],
@@ -103,7 +125,7 @@ def process_excel_file(xlsx_path):
             .reset_index()
         )
 
-        # Rename output columns
+        # Rename columns to required output format
         summary.columns = [
             "Bought Name",
             "Scrip Name",
@@ -112,7 +134,7 @@ def process_excel_file(xlsx_path):
             "Sum of Value"
         ]
 
-        # Large transaction filter (matches your screenshot)
+        # Filter large transactions (matches your screenshot)
         summary = summary[
             (summary["Sum of Bought Quantity"].abs() >= 10_000) |
             (summary["Sum of Value"].abs() >= 1_000_000)
@@ -124,15 +146,15 @@ def process_excel_file(xlsx_path):
         raise Exception(f"Error processing file: {str(e)}")
 
 
-# =========================
+# ======================
 # ROUTES
-# =========================
+# ======================
 @app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({
         "status": "healthy",
-        "service": "Flask Backend",
-        "version": "2.0.0"
+        "backend": "Flask",
+        "version": "3.0.0"
     })
 
 
@@ -148,7 +170,7 @@ def upload_file():
             return jsonify({"error": "Empty filename"}), 400
 
         if not allowed_file(file.filename):
-            return jsonify({"error": "Only .xlsx files allowed"}), 400
+            return jsonify({"error": "Only .xlsx files are allowed"}), 400
 
         filename = secure_filename(file.filename)
         temp_dir = tempfile.mkdtemp()
