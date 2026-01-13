@@ -34,20 +34,30 @@ def allowed_file(filename):
 
 
 # ======================
+# SAFE SERIES HELPER
+# ======================
+def safe_series(df, col, dtype="object"):
+    """
+    Always returns a pandas Series.
+    Prevents NoneType.combine_first crashes.
+    """
+    if col in df.columns:
+        return df[col]
+    return pd.Series(index=df.index, dtype=dtype)
+
+
+# ======================
 # CORE PROCESSING LOGIC
 # ======================
 def process_excel_file(xlsx_path):
     try:
-        # Read Excel safely (handles blank rows at top)
+        # Read Excel
         df = pd.read_excel(xlsx_path)
-        df = df.dropna(how="all")   # THIS handles blank rows safely
 
-
-        # Drop fully empty rows
+        # Remove fully blank rows
         df = df.dropna(how="all")
 
-        # 🔥 CRITICAL FIX: normalize column names
-        # Handles: "Sold\nQuantity", "Sold Quantity", extra spaces, tabs
+        # 🔥 Normalize column names (handles \n, spaces, tabs)
         df.columns = (
             df.columns
             .astype(str)
@@ -55,7 +65,7 @@ def process_excel_file(xlsx_path):
             .str.strip()
         )
 
-        # Columns to remove (safe even if missing)
+        # Columns to remove safely
         delete_column_names = [
             "Exch", "Book Type", "Settlement", "Transaction Date",
             "Order #", "Order Time", "Trade #", "Trade Time",
@@ -71,23 +81,22 @@ def process_excel_file(xlsx_path):
             errors="ignore"
         )
 
-        # Ensure numeric conversion only if column exists
+        # Convert numeric columns if present
         for col in ["Bought Quantity", "Sold Quantity", "Mkt. Value"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # SYS18 / SYS27 cleanup (DO NOT touch quantities or values)
+        # Remove SYS18 / SYS27 codes (do NOT delete quantities)
         for side in ["Bought", "Sold"]:
             code_col = f"{side} Code"
             name_col = f"{side} Name"
-
             if code_col in df.columns:
                 mask = df[code_col].isin(["SYS18", "SYS27"])
                 df.loc[mask, code_col] = None
                 if name_col in df.columns:
                     df.loc[mask, name_col] = None
 
-        # Guarantee quantity columns exist
+        # Ensure quantity columns exist
         if "Bought Quantity" not in df.columns:
             df["Bought Quantity"] = np.nan
         if "Sold Quantity" not in df.columns:
@@ -109,12 +118,22 @@ def process_excel_file(xlsx_path):
             df["Mkt. Value"]
         )
 
-        # Merge bought & sold legs safely
-        df["Final Code"] = df.get("Bought Code").combine_first(df.get("Sold Code"))
-        df["Final Name"] = df.get("Bought Name").combine_first(df.get("Sold Name"))
-        df["Final Quantity"] = df["Bought Quantity"].combine_first(df["Sold Quantity"])
+        # ======================
+        # SAFE MERGE (NO NoneType)
+        # ======================
+        df["Final Code"] = safe_series(df, "Bought Code").combine_first(
+            safe_series(df, "Sold Code")
+        )
 
-        # Aggregate (IMPORTANT: dropna=False)
+        df["Final Name"] = safe_series(df, "Bought Name").combine_first(
+            safe_series(df, "Sold Name")
+        )
+
+        df["Final Quantity"] = safe_series(df, "Bought Quantity", "float").combine_first(
+            safe_series(df, "Sold Quantity", "float")
+        )
+
+        # Aggregate results
         summary = (
             df.groupby(
                 ["Final Name", "Scrip Name", "Final Code"],
@@ -127,7 +146,7 @@ def process_excel_file(xlsx_path):
             .reset_index()
         )
 
-        # Rename columns to required output format
+        # Rename output columns
         summary.columns = [
             "Bought Name",
             "Scrip Name",
@@ -136,7 +155,7 @@ def process_excel_file(xlsx_path):
             "Sum of Value"
         ]
 
-        # Filter large transactions (matches your screenshot)
+        # Filter large transactions
         summary = summary[
             (summary["Sum of Bought Quantity"].abs() >= 10_000) |
             (summary["Sum of Value"].abs() >= 1_000_000)
@@ -156,7 +175,7 @@ def health():
     return jsonify({
         "status": "healthy",
         "backend": "Flask",
-        "version": "3.0.0"
+        "version": "4.0.0"
     })
 
 
@@ -172,7 +191,7 @@ def upload_file():
             return jsonify({"error": "Empty filename"}), 400
 
         if not allowed_file(file.filename):
-            return jsonify({"error": "Only .xlsx files are allowed"}), 400
+            return jsonify({"error": "Only .xlsx files allowed"}), 400
 
         filename = secure_filename(file.filename)
         temp_dir = tempfile.mkdtemp()
