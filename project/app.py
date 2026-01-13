@@ -39,7 +39,9 @@ def allowed_file(filename):
 def process_excel_file(xlsx_path):
     try:
         # Read Excel safely (handles blank rows at top)
-        df = pd.read_excel(xlsx_path, skip_blank_lines=True)
+        df = pd.read_excel(xlsx_path)
+        df = df.dropna(how="all")   # THIS handles blank rows safely
+
 
         # Drop fully empty rows
         df = df.dropna(how="all")
