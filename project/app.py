@@ -54,11 +54,9 @@ def process_excel_file(xlsx_path):
         mask = df['Bought Code'].isin(['SYS18', 'SYS27'])
         df.loc[mask, ['Bought Code', 'Bought Name', 'Bought Quantity']] = None
         
-        # IMPORTANT: Don't remove the Bought Code for SYS18/SYS27 in Sold Code!
-        # These are SELL transactions, keep the original Bought Code
-        # Only remove SYS18/SYS27 from Sold Code columns
-        mask_sys_sold = df['Sold Code'].isin(['SYS18', 'SYS27'])
-        df.loc[mask_sys_sold, ['Sold Code', 'Sold Name', 'Sold Quantity']] = None
+        # Remove SYS18 and SYS27 from Sold Code
+        mask = df['Sold Code'].isin(['SYS18', 'SYS27'])
+        df.loc[mask, ['Sold Code', 'Sold Name', 'Sold Quantity']] = None
         
         # Convert Sold Quantity to negative
         df['Sold Quantity'] = pd.to_numeric(df['Sold Quantity'], errors='coerce')
@@ -75,14 +73,7 @@ def process_excel_file(xlsx_path):
         df['Mkt. Value'] = pd.to_numeric(df['Mkt. Value'], errors='coerce')
         df.loc[mask_sold, 'Mkt. Value'] = -abs(df.loc[mask_sold, 'Mkt. Value'])
         
-        # ALSO: For SYS18/SYS27 in Sold Code (which we set to None), 
-        # we need to convert Bought Quantity and Mkt. Value to negative
-        # because they're actually SELL transactions
-        df.loc[mask_sys_sold, 'Bought Quantity'] = -abs(pd.to_numeric(df.loc[mask_sys_sold, 'Bought Quantity'], errors='coerce'))
-        df.loc[mask_sys_sold, 'Mkt. Value'] = -abs(pd.to_numeric(df.loc[mask_sys_sold, 'Mkt. Value'], errors='coerce'))
-        
         # Merge bought and sold columns
-        # But for SYS18/SYS27 rows, keep the original Bought Code
         df['Bought Code'] = df['Bought Code'].fillna(df['Sold Code'])
         df['Bought Name'] = df['Bought Name'].fillna(df['Sold Name'])
         df['Bought Quantity'] = df['Bought Quantity'].fillna(df['Sold Quantity'])
