@@ -47,8 +47,8 @@ def process_excel_file(xlsx_path):
         df = df.drop(columns=[col for col in delete_column_names if col in df.columns])
         
         # Clean SYS18 and SYS27 codes
-        df['Bought Code'] = df['Bought Code'].astype('str')
-        df['Sold Code'] = df['Sold Code'].astype('str')
+        df['Bought Code'] = df['Bought Code'].astype(str)
+        df['Sold Code'] = df['Sold Code'].astype(str)
         
         # Remove SYS18 and SYS27 from Bought Code
         mask = df['Bought Code'].isin(['SYS18', 'SYS27'])
@@ -58,50 +58,69 @@ def process_excel_file(xlsx_path):
         mask = df['Sold Code'].isin(['SYS18', 'SYS27'])
         df.loc[mask, ['Sold Code', 'Sold Name', 'Sold Quantity']] = None
         
+        # Convert quantity columns to numeric (handling commas)
+        df['Bought Quantity'] = pd.to_numeric(
+            df['Bought Quantity'].astype(str).str.replace(',', ''), 
+            errors='coerce'
+        )
+        df['Sold Quantity'] = pd.to_numeric(
+            df['Sold Quantity'].astype(str).str.replace(',', ''), 
+            errors='coerce'
+        )
+        
+        # Convert Value column to numeric (handling commas)
+        # Check if 'Mkt. Value' or 'Value' column exists
+        value_column = 'Mkt. Value' if 'Mkt. Value' in df.columns else 'Value'
+        df[value_column] = pd.to_numeric(
+            df[value_column].astype(str).str.replace(',', ''), 
+            errors='coerce'
+        )
+        
         # Convert Sold Quantity to negative
-        df['Sold Quantity'] = pd.to_numeric(df['Sold Quantity'], errors='coerce')
         df['Sold Quantity'] = df['Sold Quantity'].apply(
             lambda x: -abs(x) if pd.notnull(x) else x
         )
         
-        # Convert Mkt. Value to negative for sold items
-        mask_sold = (
-            df['Sold Code'].notna() &
-            df['Sold Name'].notna() &
-            df['Sold Quantity'].notna()
-        )
-        df['Mkt. Value'] = pd.to_numeric(df['Mkt. Value'], errors='coerce')
-        df.loc[mask_sold, 'Mkt. Value'] = -abs(df.loc[mask_sold, 'Mkt. Value'])
+        # IMPORTANT: Don't change the sign of Value column
+        # The Value column already has correct signs (+ for bought, - for sold)
+        # Your original code was making it double negative for sold items
         
         # Merge bought and sold columns
         df['Bought Code'] = df['Bought Code'].fillna(df['Sold Code'])
         df['Bought Name'] = df['Bought Name'].fillna(df['Sold Name'])
         df['Bought Quantity'] = df['Bought Quantity'].fillna(df['Sold Quantity'])
         
+        # For merged sold items, the Value column should remain as is (already negative)
+        
         # Drop sold columns
         df = df.drop(columns=['Sold Code', 'Sold Name', 'Sold Quantity'])
         
-        # Convert to numeric for aggregation
-        df['Bought Quantity'] = pd.to_numeric(df['Bought Quantity'], errors='coerce')
-        df['Mkt. Value'] = pd.to_numeric(df['Mkt. Value'], errors='coerce')
-        
         # Group and aggregate
         summary = (
-            df.groupby(['Bought Name', 'Scrip Name', 'Bought Code'], dropna=True)
+            df.groupby(['Bought Name', 'Scrip Name', 'Bought Code'], dropna=False)
               .agg({
                   'Bought Quantity': 'sum',
-                  'Mkt. Value': 'sum'
+                  value_column: 'sum'
               })
               .reset_index()
         )
         
-        # Filter for large transactions
+        # Rename Value column for consistency
+        summary = summary.rename(columns={value_column: 'Value'})
+        
+        # Filter for large transactions - FIXED THRESHOLD
         summary = summary[
-            (summary['Bought Quantity'] > 9999) |
-            (summary['Bought Quantity'] < -9999) |
-            (summary['Mkt. Value'] > 999999) |
-            (summary['Mkt. Value'] < -999999)
+            (summary['Bought Quantity'].abs() > 9999) |
+            (summary['Value'].abs() > 999999)
         ]
+        
+        # Format numeric columns
+        summary['Bought Quantity'] = summary['Bought Quantity'].apply(
+            lambda x: f"{x:,.2f}" if pd.notnull(x) else x
+        )
+        summary['Value'] = summary['Value'].apply(
+            lambda x: f"{x:,.2f}" if pd.notnull(x) else x
+        )
         
         return summary
         
