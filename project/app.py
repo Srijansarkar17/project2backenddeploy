@@ -46,44 +46,56 @@ def process_excel_file(xlsx_path):
         
         df = df.drop(columns=[col for col in delete_column_names if col in df.columns])
         
-        # Clean SYS18 and SYS27 codes
-        df['Bought Code'] = df['Bought Code'].astype('str')
-        df['Sold Code'] = df['Sold Code'].astype('str')
+        # Clean SYS18 and SYS27 codes - FIXED LOGIC
+        df['Bought Code'] = df['Bought Code'].astype(str)
+        df['Sold Code'] = df['Sold Code'].astype(str)
         
-        # Remove SYS18 and SYS27 from Bought Code
+        # IMPORTANT: Don't remove SYS18 from Sold Code!
+        # SYS18 in Sold Code means it's a SELL transaction
+        # Only remove SYS18 from Bought Code
         mask = df['Bought Code'].isin(['SYS18', 'SYS27'])
         df.loc[mask, ['Bought Code', 'Bought Name', 'Bought Quantity']] = None
         
-        # Remove SYS18 and SYS27 from Sold Code
-        mask = df['Sold Code'].isin(['SYS18', 'SYS27'])
-        df.loc[mask, ['Sold Code', 'Sold Name', 'Sold Quantity']] = None
-        
-        # Convert Sold Quantity to negative
+        # Convert quantity columns to numeric
+        df['Bought Quantity'] = pd.to_numeric(df['Bought Quantity'], errors='coerce')
         df['Sold Quantity'] = pd.to_numeric(df['Sold Quantity'], errors='coerce')
-        df['Sold Quantity'] = df['Sold Quantity'].apply(
-            lambda x: -abs(x) if pd.notnull(x) else x
-        )
-        
-        # Convert Mkt. Value to negative for sold items
-        mask_sold = (
-            df['Sold Code'].notna() &
-            df['Sold Name'].notna() &
-            df['Sold Quantity'].notna()
-        )
         df['Mkt. Value'] = pd.to_numeric(df['Mkt. Value'], errors='coerce')
+        
+        # Identify SELL transactions (when Sold Code is SYS18 or SYS27)
+        sell_mask = df['Sold Code'].isin(['SYS18', 'SYS27'])
+        
+        # For SELL transactions:
+        # 1. Convert Bought Quantity to negative (since they're selling)
+        # 2. Convert Mkt. Value to negative
+        df.loc[sell_mask, 'Bought Quantity'] = -df.loc[sell_mask, 'Bought Quantity']
+        df.loc[sell_mask, 'Mkt. Value'] = -df.loc[sell_mask, 'Mkt. Value']
+        
+        # For SELL transactions, move Sold Code/Name to Bought columns
+        # (but keep the sign negative from above)
+        df.loc[sell_mask, 'Bought Code'] = df.loc[sell_mask, 'Sold Code']
+        df.loc[sell_mask, 'Bought Name'] = df.loc[sell_mask, 'Sold Name']
+        
+        # For regular Sold transactions (not SYS18/SYS27)
+        # Convert Sold Quantity to negative
+        regular_sell_mask = df['Sold Quantity'].notna() & ~sell_mask
+        df.loc[regular_sell_mask, 'Sold Quantity'] = -abs(df.loc[regular_sell_mask, 'Sold Quantity'])
+        
+        # Convert Mkt. Value to negative for regular sold items
+        mask_sold = (
+            df['Sold Code'].notna() & 
+            df['Sold Name'].notna() & 
+            df['Sold Quantity'].notna() &
+            ~sell_mask  # Not SYS18/SYS27 transactions
+        )
         df.loc[mask_sold, 'Mkt. Value'] = -abs(df.loc[mask_sold, 'Mkt. Value'])
         
-        # Merge bought and sold columns
+        # Merge regular bought and sold columns
         df['Bought Code'] = df['Bought Code'].fillna(df['Sold Code'])
         df['Bought Name'] = df['Bought Name'].fillna(df['Sold Name'])
         df['Bought Quantity'] = df['Bought Quantity'].fillna(df['Sold Quantity'])
         
         # Drop sold columns
         df = df.drop(columns=['Sold Code', 'Sold Name', 'Sold Quantity'])
-        
-        # Convert to numeric for aggregation
-        df['Bought Quantity'] = pd.to_numeric(df['Bought Quantity'], errors='coerce')
-        df['Mkt. Value'] = pd.to_numeric(df['Mkt. Value'], errors='coerce')
         
         # Group and aggregate
         summary = (
@@ -95,12 +107,16 @@ def process_excel_file(xlsx_path):
               .reset_index()
         )
         
+        # Rename columns for consistency
+        summary = summary.rename(columns={
+            'Bought Quantity': 'Sum of Bought Quantity',
+            'Mkt. Value': 'Sum of Value'
+        })
+        
         # Filter for large transactions
         summary = summary[
-            (summary['Bought Quantity'] > 9999) |
-            (summary['Bought Quantity'] < -9999) |
-            (summary['Mkt. Value'] > 999999) |
-            (summary['Mkt. Value'] < -999999)
+            (summary['Sum of Bought Quantity'].abs() > 9999) |
+            (summary['Sum of Value'].abs() > 999999)
         ]
         
         return summary
