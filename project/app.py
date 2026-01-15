@@ -23,90 +23,105 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def process_excel_file(xlsx_path):
-    """Process the Excel file using your provided logic"""
     try:
-        # Read the Excel file
+        # -------------------------------
+        # 1. Read Excel
+        # -------------------------------
         df = pd.read_excel(xlsx_path)
-        
-        # Remove rows where all columns except the first are NaN
+
+        # Remove empty rows (except first column)
         df = df.dropna(subset=df.columns[1:], how='all')
-        
-        # Set new header from row 4
+
+        # -------------------------------
+        # 2. Fix headers & data rows
+        # -------------------------------
         new_header = df.iloc[0]
         df = df.iloc[5:].copy()
         df.columns = new_header
         df.reset_index(drop=True, inplace=True)
-        
-        # Delete unnecessary columns
-        delete_column_names = ['Exch', 'Book Type', 'Settlement', 'Transaction Date', 'Order #', 
-                              'Order Time', 'Trade #', 'Trade Time', 'Terminal #', 'CTCL Terminal #', 
-                              'Txn Type', 'Scrip Code', '*', 'Expiry Date', 'Strike Price', 
-                              'O.T.', 'Market Rate', 'Bought Branch Code', 'Bought Rate', 
-                              'Sold Branch Code', 'Sold Rate', 'Brok-Cont', 'Value-Brok']
-        
-        df = df.drop(columns=[col for col in delete_column_names if col in df.columns])
-        
-        # Clean SYS18 and SYS27 codes
-        df['Bought Code'] = df['Bought Code'].astype('str')
-        df['Sold Code'] = df['Sold Code'].astype('str')
-        
-        # Remove SYS18 and SYS27 from Bought Code
-        mask = df['Bought Code'].isin(['SYS18', 'SYS27'])
-        df.loc[mask, ['Bought Code', 'Bought Name', 'Bought Quantity']] = None
-        
-        # Remove SYS18 and SYS27 from Sold Code
-        mask = df['Sold Code'].isin(['SYS18', 'SYS27'])
-        df.loc[mask, ['Sold Code', 'Sold Name', 'Sold Quantity']] = None
-        
-        # Convert Sold Quantity to negative
-        df['Sold Quantity'] = pd.to_numeric(df['Sold Quantity'], errors='coerce')
-        df['Sold Quantity'] = df['Sold Quantity'].apply(
-            lambda x: -abs(x) if pd.notnull(x) else x
-        )
-        
-        # Convert Mkt. Value to negative for sold items
-        mask_sold = (
-            df['Sold Code'].notna() &
-            df['Sold Name'].notna() &
-            df['Sold Quantity'].notna()
-        )
-        df['Mkt. Value'] = pd.to_numeric(df['Mkt. Value'], errors='coerce')
-        df.loc[mask_sold, 'Mkt. Value'] = -abs(df.loc[mask_sold, 'Mkt. Value'])
-        
-        # Merge bought and sold columns
-        df['Bought Code'] = df['Bought Code'].fillna(df['Sold Code'])
-        df['Bought Name'] = df['Bought Name'].fillna(df['Sold Name'])
-        df['Bought Quantity'] = df['Bought Quantity'].fillna(df['Sold Quantity'])
-        
-        # Drop sold columns
-        df = df.drop(columns=['Sold Code', 'Sold Name', 'Sold Quantity'])
-        
-        # Convert to numeric for aggregation
+
+        # -------------------------------
+        # 3. Drop unnecessary columns
+        # -------------------------------
+        delete_column_names = [
+            'Exch', 'Book Type', 'Settlement', 'Transaction Date',
+            'Order #', 'Order Time', 'Trade #', 'Trade Time',
+            'Terminal #', 'CTCL Terminal #', 'Txn Type',
+            'Scrip Code', '*', 'Expiry Date', 'Strike Price',
+            'O.T.', 'Market Rate', 'Bought Branch Code',
+            'Bought Rate', 'Sold Branch Code', 'Sold Rate',
+            'Brok-Cont', 'Value-Brok'
+        ]
+
+        df = df.drop(columns=[c for c in delete_column_names if c in df.columns])
+
+        # -------------------------------
+        # 4. Normalize dtypes
+        # -------------------------------
+        df['Bought Code'] = df['Bought Code'].astype(str)
+        df['Sold Code'] = df['Sold Code'].astype(str)
+
         df['Bought Quantity'] = pd.to_numeric(df['Bought Quantity'], errors='coerce')
+        df['Sold Quantity'] = pd.to_numeric(df['Sold Quantity'], errors='coerce')
         df['Mkt. Value'] = pd.to_numeric(df['Mkt. Value'], errors='coerce')
-        
-        # Group and aggregate
+
+        # -------------------------------
+        # 5. REMOVE SYS trades COMPLETELY
+        # -------------------------------
+        df = df[~df['Bought Code'].isin(['SYS18', 'SYS27'])]
+        df = df[~df['Sold Code'].isin(['SYS18', 'SYS27'])]
+
+        # -------------------------------
+        # 6. Make SOLD quantities & values negative
+        # -------------------------------
+        df.loc[df['Sold Quantity'].notna(), 'Sold Quantity'] = (
+            -df.loc[df['Sold Quantity'].notna(), 'Sold Quantity'].abs()
+        )
+
+        df.loc[df['Sold Quantity'].notna(), 'Mkt. Value'] = (
+            -df.loc[df['Sold Quantity'].notna(), 'Mkt. Value'].abs()
+        )
+
+        # -------------------------------
+        # 7. Create FINAL net quantity
+        # -------------------------------
+        df['Final Quantity'] = (
+            df['Bought Quantity'].fillna(0) +
+            df['Sold Quantity'].fillna(0)
+        )
+
+        # -------------------------------
+        # 8. Group & aggregate
+        # -------------------------------
         summary = (
-            df.groupby(['Bought Name', 'Scrip Name', 'Bought Code'], dropna=True)
+            df.groupby(['Bought Name', 'Scrip Name', 'Bought Code'], as_index=False)
               .agg({
-                  'Bought Quantity': 'sum',
+                  'Final Quantity': 'sum',
                   'Mkt. Value': 'sum'
               })
-              .reset_index()
         )
-        
-        # Filter for large transactions
+
+        # -------------------------------
+        # 9. Apply large transaction filter
+        # -------------------------------
         summary = summary[
-            (summary['Bought Quantity'] > 9999) |
-            (summary['Bought Quantity'] < -9999) |
-            (summary['Mkt. Value'] > 999999) |
-            (summary['Mkt. Value'] < -999999)
+            (summary['Final Quantity'].abs() >= 10000) |
+            (summary['Mkt. Value'].abs() >= 1_000_000)
         ]
-        
+
+        # -------------------------------
+        # 10. Rename columns for output
+        # -------------------------------
+        summary = summary.rename(columns={
+            'Final Quantity': 'Sum of Bought Quantity',
+            'Mkt. Value': 'Sum of Value'
+        })
+
         return summary
-        
+
     except Exception as e:
         raise Exception(f"Error processing file: {str(e)}")
+
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
